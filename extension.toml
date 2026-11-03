@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/zeshi09/zeshicast/main/resources/extension.schema.json
+id = "zeshi09.gh"
+name = "GitHub"
+version = "0.1.0"
+protocol = 1
+# shell: the binary runs `gh`; open_url: Enter opens a PR or issue.
+capabilities = ["shell", "open_url"]
+binaries = ["bin/gh-items"]

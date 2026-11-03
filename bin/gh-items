@@ -1,0 +1,98 @@
+#!/bin/sh
+# zeshicast extension: your open pull requests, review requests and assigned
+# issues on GitHub, through the `gh` CLI.
+#
+# `search` must answer within 400 ms, so it only reads a cache; the
+# "GitHub: refresh" row fetches (one GraphQL call) through `execute`.
+set -eu
+
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/zeshicast-gh"
+cache="$cache_dir/items.json"
+
+request=$(head -n 1)
+method=$(printf '%s' "$request" | jq -r '.method')
+protocol=$(printf '%s' "$request" | jq -r '.params.protocol')
+
+reply() { jq -cn --argjson result "$1" '{jsonrpc: "2.0", id: 1, result: $result}'; }
+fail() { jq -cn --arg message "$1" '{jsonrpc: "2.0", id: 1, error: {code: -32000, message: $message}}'; }
+
+if [ "$protocol" != 1 ]; then
+  fail "zeshicast-gh speaks protocol 1, the host sent $protocol"
+  exit 0
+fi
+
+search() {
+  query=$(printf '%s' "$request" | jq -r '.params.query')
+  # The host asks every extension on every keystroke: answer only `gh …`.
+  case "$query" in
+    gh | "gh "*) ;;
+    *) reply '[]'; return ;;
+  esac
+  needle=$(printf '%s' "${query#gh}" | sed 's/^ *//' | tr '[:upper:]' '[:lower:]')
+
+  if [ -s "$cache" ]; then
+    items=$(cat "$cache")
+    age=$(( ($(date +%s) - $(stat -c %Y "$cache")) / 60 ))
+    fetched="fetched $age min ago"
+  else
+    items='[]'
+    fetched="not fetched yet"
+  fi
+
+  reply "$(jq -cn --argjson items "$items" --arg needle "$needle" --arg fetched "$fetched" '
+    ($items
+      | map(select(($needle == "") or
+          ((.title + " " + .repo + " #" + (.number | tostring)) | ascii_downcase | contains($needle))))
+      | to_entries
+      | map(.value as $i | {
+          id: $i.url,
+          title: ("#" + ($i.number | tostring) + " " + $i.title),
+          subtitle: ($i.kind + " · " + $i.repo),
+          icon: (if $i.kind == "Assigned issue" then "dialog-information-symbolic"
+                 else "emblem-shared-symbolic" end),
+          score: (95 - .key),
+          open_url: $i.url
+        }))
+    + [{id: "refresh", title: "GitHub: refresh", subtitle: ("Pull requests and issues, " + $fetched),
+        icon: "view-refresh-symbolic", score: 40}]
+  ')"
+}
+
+refresh() {
+  # One call for the three lists; `@me` is the account `gh` is logged in as.
+  data=$(gh api graphql -f query='
+    fragment pr on PullRequest { number title url repository { nameWithOwner } }
+    fragment issue on Issue { number title url repository { nameWithOwner } }
+    query {
+      review: search(query: "is:open is:pr review-requested:@me archived:false", type: ISSUE, first: 30) { nodes { ...pr } }
+      mine: search(query: "is:open is:pr author:@me archived:false", type: ISSUE, first: 30) { nodes { ...pr } }
+      issues: search(query: "is:open is:issue assignee:@me archived:false", type: ISSUE, first: 30) { nodes { ...issue } }
+    }' 2>&1) || {
+    reply "$(jq -cn --arg o "gh failed: $data" '{success: false, output: $o}')"
+    return
+  }
+  mkdir -p "$cache_dir"
+  printf '%s' "$data" | jq '
+    def rows($kind): map(select(.url != null)
+      | {kind: $kind, number, title, url, repo: .repository.nameWithOwner});
+    (.data.review.nodes | rows("Review requested"))
+    + (.data.mine.nodes | rows("Your pull request"))
+    + (.data.issues.nodes | rows("Assigned issue"))
+  ' > "$cache.tmp"
+  mv "$cache.tmp" "$cache"
+  count=$(jq length "$cache")
+  reply "$(jq -cn --arg n "$count" '{success: true, notify: ("GitHub: " + $n + " open items")}')"
+}
+
+case "$method" in
+  search) search ;;
+  execute)
+    id=$(printf '%s' "$request" | jq -r '.params.id')
+    if [ "$id" = refresh ]; then
+      refresh
+    else
+      fail "unknown item $id"
+    fi
+    ;;
+  *) jq -cn --arg m "$method" '{jsonrpc: "2.0", id: 1, error: {code: -32601, message: ("unknown method " + $m)}}' ;;
+esac
