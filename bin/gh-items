@@ -50,11 +50,11 @@ search() {
           subtitle: ($i.kind + " · " + $i.repo),
           icon: (if $i.kind == "Assigned issue" then "dialog-information-symbolic"
                  else "emblem-shared-symbolic" end),
-          score: (95 - .key),
+          score: (600 - .key),
           open_url: $i.url
         }))
     + [{id: "refresh", title: "GitHub: refresh", subtitle: ("Pull requests and issues, " + $fetched),
-        icon: "view-refresh-symbolic", score: 40}]
+        icon: "view-refresh-symbolic", score: 550}]
   ')"
 }
 
